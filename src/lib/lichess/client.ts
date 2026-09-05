@@ -30,16 +30,80 @@ export async function restCall<T>(
       throw new Error("Lichess rate limit (429) — queue paused 65s");
     }
     if (error !== undefined || data === undefined) {
+      const detail = JSON.stringify(error ?? "empty body");
       throw new Error(
-        `Lichess ${response.status} ${response.url}: ${JSON.stringify(error ?? "empty body")}`,
+        `Lichess ${response.status} ${response.url}: ${detail.length > 300 ? detail.slice(0, 300) + "…" : detail}`,
       );
     }
     return data;
   });
 }
 
+const formSerializer = (body: unknown) =>
+  new URLSearchParams(
+    Object.fromEntries(
+      Object.entries(body as Record<string, unknown>)
+        .filter(([, value]) => value != null)
+        .map(([key, value]) => [key, String(value)]),
+    ),
+  );
+
 export async function getAccount(tokenOverride?: string) {
   return restCall(() =>
     lichess.GET("/api/account", { headers: authHeaders(tokenOverride) }),
+  );
+}
+
+// Omit both clock params for an unlimited (correspondence) game — allowed vs AI.
+export async function challengeAi(params: {
+  level: number;
+  clockLimit?: number; // seconds
+  clockIncrement?: number; // seconds
+  color: "white" | "black" | "random";
+  fen?: string;
+}) {
+  return restCall(() =>
+    lichess.POST("/api/challenge/ai", {
+      // openapi-fetch defaults to application/json — this endpoint is form-encoded.
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: {
+        level: params.level,
+        "clock.limit": params.clockLimit,
+        "clock.increment": params.clockIncrement,
+        color: params.color,
+        ...(params.fen ? { fen: params.fen } : {}),
+      },
+      bodySerializer: formSerializer,
+    }),
+  );
+}
+
+export async function boardMove(gameId: string, uci: string) {
+  return restCall(() =>
+    lichess.POST("/api/board/game/{gameId}/move/{move}", {
+      params: { path: { gameId, move: uci } },
+      headers: authHeaders(),
+    }),
+  );
+}
+
+export async function boardResign(gameId: string) {
+  return restCall(() =>
+    lichess.POST("/api/board/game/{gameId}/resign", {
+      params: { path: { gameId } },
+      headers: authHeaders(),
+    }),
+  );
+}
+
+export async function boardAbort(gameId: string) {
+  return restCall(() =>
+    lichess.POST("/api/board/game/{gameId}/abort", {
+      params: { path: { gameId } },
+      headers: authHeaders(),
+    }),
   );
 }

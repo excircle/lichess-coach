@@ -1,4 +1,12 @@
+import { desc } from "drizzle-orm";
+import Link from "next/link";
+import NewGameForm from "@/components/NewGameForm";
+import { db } from "@/lib/db";
+import { games } from "@/lib/db/schema";
+import { isTerminalStatus } from "@/lib/games/types";
 import { getSession } from "@/lib/session";
+
+export const dynamic = "force-dynamic";
 
 export default async function Dashboard() {
   const session = await getSession();
@@ -12,24 +20,7 @@ export default async function Dashboard() {
 
       <div className="mt-10">
         {session.username ? (
-          <div className="space-y-6">
-            <p>
-              Logged in as{" "}
-              <span className="font-semibold">{session.username}</span>
-            </p>
-            <p className="text-sm text-neutral-500">
-              Game creation lands in M2 — for now this page only proves the
-              Lichess login.
-            </p>
-            <form action="/api/auth/logout" method="post">
-              <button
-                type="submit"
-                className="text-sm underline underline-offset-4 hover:text-neutral-500"
-              >
-                Log out
-              </button>
-            </form>
-          </div>
+          <LoggedIn username={session.username} />
         ) : (
           <a
             href="/api/auth/login"
@@ -40,5 +31,63 @@ export default async function Dashboard() {
         )}
       </div>
     </main>
+  );
+}
+
+function LoggedIn({ username }: { username: string }) {
+  const recent = db.select().from(games).orderBy(desc(games.createdAt)).limit(15).all();
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <p>
+          Logged in as <span className="font-semibold">{username}</span>
+        </p>
+        <form action="/api/auth/logout" method="post">
+          <button
+            type="submit"
+            className="text-sm underline underline-offset-4 hover:text-neutral-500"
+          >
+            Log out
+          </button>
+        </form>
+      </div>
+
+      <NewGameForm />
+
+      <section>
+        <h2 className="mb-3 font-semibold">Recent games</h2>
+        {recent.length === 0 ? (
+          <p className="text-sm text-neutral-500">
+            No games yet — start one above.
+          </p>
+        ) : (
+          <ul className="divide-y divide-neutral-200 rounded-xl border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+            {recent.map((g) => {
+              const finished = isTerminalStatus(g.status);
+              return (
+                <li key={g.id}>
+                  <Link
+                    href={`/play/${g.id}`}
+                    className="flex items-center justify-between px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                  >
+                    <span>
+                      {finished ? "" : "● "}
+                      vs Stockfish {g.aiLevel} · {g.userColor} ·{" "}
+                      {g.clockInitial != null
+                        ? `${Math.round(g.clockInitial / 60)}+${g.clockIncrement ?? 0}`
+                        : "unlimited"}
+                    </span>
+                    <span className="text-neutral-500">
+                      {finished ? (g.result ?? g.status) : "live"}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+    </div>
   );
 }
