@@ -3,6 +3,23 @@
 import { useEffect, useRef } from "react";
 import type { SnapshotMove } from "@/lib/games/types";
 
+const GLYPHS: Record<string, { text: string; className: string }> = {
+  blunder: { text: "??", className: "text-red-600" },
+  mistake: { text: "?", className: "text-orange-500" },
+  inaccuracy: { text: "?!", className: "text-yellow-600" },
+};
+
+function MoveCell({ move }: { move?: SnapshotMove }) {
+  if (!move) return null;
+  const glyph = move.judgment ? GLYPHS[move.judgment] : undefined;
+  return (
+    <>
+      {move.san}
+      {glyph && <span className={glyph.className}>{glyph.text}</span>}
+    </>
+  );
+}
+
 export default function MoveList({ moves }: { moves: SnapshotMove[] }) {
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -35,8 +52,12 @@ export default function MoveList({ moves }: { moves: SnapshotMove[] }) {
             {rows.map((row) => (
               <tr key={row.num} className="leading-6">
                 <td className="w-8 pr-2 text-right text-neutral-400">{row.num}.</td>
-                <td className="w-16 font-medium">{row.white?.san ?? "…"}</td>
-                <td className="w-16 font-medium">{row.black?.san ?? ""}</td>
+                <td className="w-20 font-medium">
+                  <MoveCell move={row.white} />
+                </td>
+                <td className="w-20 font-medium">
+                  <MoveCell move={row.black} />
+                </td>
                 <td />
               </tr>
             ))}

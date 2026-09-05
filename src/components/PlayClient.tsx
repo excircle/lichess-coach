@@ -6,11 +6,13 @@ import { applyUci } from "@/lib/chess";
 import { useGameEvents } from "@/hooks/useGameEvents";
 import Board from "./Board";
 import Clock from "./Clock";
+import CoachPanel from "./CoachPanel";
+import EvalBar from "./EvalBar";
 import GameControls from "./GameControls";
 import MoveList from "./MoveList";
 
 export default function PlayClient({ gameId }: { gameId: string }) {
-  const { snapshot, connected } = useGameEvents(gameId);
+  const { snapshot, connected, coachError } = useGameEvents(gameId);
   const [optimisticFen, setOptimisticFen] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const serverFen = snapshot?.fen;
@@ -58,14 +60,17 @@ export default function PlayClient({ gameId }: { gameId: string }) {
   const oppColor = userColor === "white" ? "black" : "white";
 
   return (
-    <div className="flex flex-col gap-6 lg:flex-row">
-      <div className="w-full max-w-[560px] shrink-0">
-        <Board
-          fen={optimisticFen ?? snapshot.fen}
-          orientation={userColor}
-          canMove={myTurn}
-          onMove={onMove}
-        />
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="flex w-full max-w-[600px] shrink-0 items-stretch gap-2">
+        {game.coachMode === "auto" && <EvalBar snapshot={snapshot} />}
+        <div className="w-full max-w-[560px]">
+          <Board
+            fen={optimisticFen ?? snapshot.fen}
+            orientation={userColor}
+            canMove={myTurn}
+            onMove={onMove}
+          />
+        </div>
       </div>
 
       <div className="flex min-w-[280px] flex-1 flex-col gap-3">
@@ -92,9 +97,7 @@ export default function PlayClient({ gameId }: { gameId: string }) {
         )}
         <GameControls gameId={gameId} snapshot={snapshot} />
 
-        <div className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
-          Coach panel arrives in M3 (mode: {game.coachMode}).
-        </div>
+        <CoachPanel gameId={gameId} snapshot={snapshot} coachError={coachError} />
 
         <p className="text-xs text-neutral-400">
           {finished

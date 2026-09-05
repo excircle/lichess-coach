@@ -105,7 +105,45 @@ export function applyUci(chess: Chess, uci: string) {
   }
 }
 
-function castleSanIfKingToRook(chess: Chess, from: string, to: string): string | null {
+// Converts a UCI pv into SAN from a starting FEN (for coach prompts).
+// Stops silently at the first inapplicable move.
+export function uciLineToSan(fen: string, uciMoves: string[], maxPlies = 6): string {
+  const chess = new Chess(fen);
+  const sans: string[] = [];
+  for (const uci of uciMoves.slice(0, maxPlies)) {
+    try {
+      sans.push(applyUci(chess, uci).san);
+    } catch {
+      break;
+    }
+  }
+  return sans.join(" ");
+}
+
+// Normalizes a UCI side-to-move score to White POV, given the analyzed FEN.
+export function toWhitePov(
+  fen: string,
+  score: { cp: number | null; mate: number | null },
+): { cp: number | null; mate: number | null } {
+  const blackToMove = fen.split(" ")[1] === "b";
+  if (!blackToMove) return score;
+  return {
+    cp: score.cp == null ? null : -score.cp,
+    mate: score.mate == null ? null : -score.mate,
+  };
+}
+
+// "+0.41", "-2.10", "#3", "#-2" — White POV display convention.
+export function formatEval(cp: number | null, mate: number | null): string {
+  if (mate != null) return mate > 0 ? `#${mate}` : `#-${Math.abs(mate)}`;
+  if (cp == null) return "?";
+  const pawns = cp / 100;
+  return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(2)}`;
+}
+
+// Exported for the Board UI too: dragging/clicking the king onto its own rook
+// is a castle gesture (lichess-style) in addition to the two-square king move.
+export function castleSanIfKingToRook(chess: Chess, from: string, to: string): string | null {
   const piece = chess.get(from as Square);
   const target = chess.get(to as Square);
   if (
