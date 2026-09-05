@@ -1,0 +1,15 @@
+FROM node:22-trixie-slim
+
+# Stockfish 17 from Debian trixie (arm64 build available) + CA certs for HTTPS
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends stockfish ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+EXPOSE 3000
+
+# npm install must run in-container: the Agent SDK ships platform-specific
+# optionalDependencies (linux-arm64) and node_modules lives in a named volume,
+# so the host's darwin modules never leak in.
+CMD ["bash", "-c", "npm install && npm run db:migrate && npm run dev"]

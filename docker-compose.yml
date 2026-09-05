@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+      - "4983:4983" # drizzle-kit studio (started manually in-container when needed)
+    env_file:
+      - path: .env
+        required: false # M1 scaffolding (build/migrate/typecheck) runs before .env exists
+    environment:
+      DATABASE_PATH: /data/coach.db
+      STOCKFISH_PATH: /usr/games/stockfish
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules # named volume: linux modules never mix with host darwin ones
+      - data:/data # SQLite db + agent scratch dir
+
+volumes:
+  node_modules:
+  data:

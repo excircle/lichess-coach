@@ -18,6 +18,12 @@
 # misc
 .DS_Store
 *.pem
+.claude
+.dockerignore
+CLAUDE.MD
+OUTCOME.MD
+PLAN.md
+api
 
 # debug
 npm-debug.log*
@@ -34,3 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# lichess-coach: local sqlite files (real db lives in the docker volume)
+coach.db*
+/data/

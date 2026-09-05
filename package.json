@@ -1,0 +1,46 @@
+{
+  "name": "lichess-coach",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio --host 0.0.0.0 --port 4983",
+    "spike:coach": "tsx scripts/spike-coach.ts",
+    "spike:stockfish": "tsx scripts/spike-stockfish.ts",
+    "spike:stream": "tsx scripts/spike-stream.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.261",
+    "@lichess-org/types": "^2.0.169",
+    "@tanstack/react-query": "^5.102.8",
+    "better-sqlite3": "^13.0.3",
+    "chess.js": "^1.4.0",
+    "drizzle-orm": "^0.45.2",
+    "iron-session": "^9.0.1",
+    "next": "16.3.4",
+    "openapi-fetch": "^0.17.0",
+    "react": "19.2.8",
+    "react-chessboard": "^5.12.1",
+    "react-dom": "19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.13",
+    "typescript": "^5"
+  }
+}
