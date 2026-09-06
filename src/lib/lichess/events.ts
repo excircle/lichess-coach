@@ -104,7 +104,10 @@ function handleEvent(value: unknown): void {
       if (status) {
         markFinishedIfNeeded(gameId, status, event.game?.winner ?? null);
       }
-      // M4 hook: trigger the review pipeline here as well (idempotent).
+      // Belt-and-braces review trigger (idempotent; A2).
+      void import("@/lib/review/pipeline").then(({ triggerReview }) =>
+        triggerReview(gameId),
+      );
       break;
     }
     default:

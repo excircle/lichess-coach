@@ -627,7 +627,10 @@ export class GameManager extends EventEmitter {
     );
     this.emitEvent({ type: "finish", snapshot: this.getSnapshot() });
     this.abortStream?.();
-    // M4 hook: trigger review pipeline here (also from gameFinish event — idempotent).
+    // M4: kick the review (idempotent — the gameFinish event also triggers it).
+    void import("@/lib/review/pipeline").then(({ triggerReview }) =>
+      triggerReview(this.gameId),
+    );
   }
 
   private emitEvent(payload: GameEventPayload): void {

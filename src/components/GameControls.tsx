@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import type { GameSnapshot } from "@/lib/games/types";
 
@@ -37,9 +38,12 @@ export default function GameControls({ gameId, snapshot }: GameControlsProps) {
     return (
       <div className="rounded-lg border border-neutral-200 p-4 text-center dark:border-neutral-800">
         <p className="font-semibold">{outcome}</p>
-        <p className="mt-1 text-sm text-neutral-500">
-          Post-game review arrives in M4.
-        </p>
+        <Link
+          href={`/games/${gameId}`}
+          className="mt-2 inline-block rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        >
+          View review →
+        </Link>
       </div>
     );
   }

@@ -81,6 +81,18 @@ export async function challengeAi(params: {
   );
 }
 
+// Post-game export. JSON needs an explicit Accept header (default is PGN) and
+// pgn only arrives with pgnInJson=true (PLAN.md amendments). No auth required
+// by the spec, but we send it anyway for the authed rate-limit bucket.
+export async function exportGame(gameId: string) {
+  return restCall(() =>
+    lichess.GET("/game/export/{gameId}", {
+      params: { path: { gameId }, query: { pgnInJson: true } },
+      headers: { ...authHeaders(), Accept: "application/json" },
+    }),
+  );
+}
+
 export async function boardMove(gameId: string, uci: string) {
   return restCall(() =>
     lichess.POST("/api/board/game/{gameId}/move/{move}", {

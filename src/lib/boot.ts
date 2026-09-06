@@ -3,6 +3,7 @@ import { db } from "./db";
 import { games } from "./db/schema";
 import { ensureGameManager } from "./games/manager";
 import { ensureEventStream } from "./lichess/events";
+import { recoverStaleReviews } from "./review/pipeline";
 
 // Runs once per server start (instrumentation.ts). Migrations are NOT run here
 // — the container entrypoint runs `npm run db:migrate` before `next dev`.
@@ -20,5 +21,11 @@ export async function boot(): Promise<void> {
   for (const row of active) ensureGameManager(row.id);
   if (active.length > 0) {
     console.log(`[boot] re-attached ${active.length} active game manager(s)`);
+  }
+
+  // Reviews interrupted mid-flight by a restart resume from pending.
+  const recovered = recoverStaleReviews();
+  if (recovered > 0) {
+    console.log(`[boot] resumed ${recovered} interrupted review(s)`);
   }
 }

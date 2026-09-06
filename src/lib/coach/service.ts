@@ -17,7 +17,11 @@ export interface CoachReply {
 
 export async function requestCoachText(
   prompt: string,
-  opts: { abortController?: AbortController } = {},
+  opts: {
+    abortController?: AbortController;
+    systemPrompt?: string; // defaults to the live-coach persona
+    model?: string; // defaults to COACH_MODEL
+  } = {},
 ): Promise<CoachReply> {
   if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     throw new CoachUnavailableError("CLAUDE_CODE_OAUTH_TOKEN not set");
@@ -27,13 +31,13 @@ export async function requestCoachText(
     throw new CoachUnavailableError("ANTHROPIC_API_KEY is set — refusing (would bypass Max subscription)");
   }
   fs.mkdirSync(AGENT_CWD, { recursive: true });
-  const model = process.env.COACH_MODEL ?? "sonnet";
+  const model = opts.model ?? process.env.COACH_MODEL ?? "sonnet";
   const started = Date.now();
 
   for await (const message of query({
     prompt,
     options: {
-      systemPrompt: COACH_SYSTEM_PROMPT,
+      systemPrompt: opts.systemPrompt ?? COACH_SYSTEM_PROMPT,
       maxTurns: 1,
       settingSources: [],
       allowedTools: [],

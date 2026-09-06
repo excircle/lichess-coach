@@ -68,7 +68,7 @@ function LoggedIn({ username }: { username: string }) {
               return (
                 <li key={g.id}>
                   <Link
-                    href={`/play/${g.id}`}
+                    href={finished ? `/games/${g.id}` : `/play/${g.id}`}
                     className="flex items-center justify-between px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   >
                     <span>
