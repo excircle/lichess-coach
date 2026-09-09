@@ -44,7 +44,7 @@ export async function POST(
   }
 }
 
-const modeSchema = z.object({ mode: z.enum(["auto", "off"]) });
+const modeSchema = z.object({ mode: z.enum(["auto", "opening", "off"]) });
 
 // PUT — toggle coach mode; persisted and enforced server-side.
 export async function PUT(
@@ -61,7 +61,10 @@ export async function PUT(
   }
   const parsed = modeSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
-    return NextResponse.json({ error: "mode must be auto|off" }, { status: 400 });
+    return NextResponse.json(
+      { error: "mode must be auto|opening|off" },
+      { status: 400 },
+    );
   }
   const manager = getGameManager(gameId);
   if (manager) {

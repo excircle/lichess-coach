@@ -1,13 +1,14 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
+import type { CoachMode } from "@/lib/games/types";
 
 export interface CreateGameParams {
   level: number;
   clockLimit: number | null; // seconds; null = unlimited
   clockIncrement: number | null; // seconds
   color: "white" | "black" | "random";
-  coachMode: "auto" | "off";
+  coachMode: CoachMode;
 }
 
 export function useCreateGame() {

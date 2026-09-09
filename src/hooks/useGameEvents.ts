@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { CoachEvent, EvalEvent, GameSnapshot } from "@/lib/games/types";
+import type {
+  CoachEvent,
+  EvalEvent,
+  GameSnapshot,
+  OpeningState,
+} from "@/lib/games/types";
 
 // SSE consumer: snapshot on connect, then state/finish (full snapshots) plus
 // eval/coach deltas merged in. EventSource auto-reconnects on drops and the
@@ -75,11 +80,19 @@ export function useGameEvents(gameId: string) {
       });
     };
 
+    // Merge by value (PLAN OS risk 7): each opening event wholesale-replaces
+    // the snapshot's opening — state/finish frames already carry it.
+    const onOpening = (event: MessageEvent) => {
+      const op = JSON.parse(event.data) as OpeningState;
+      setSnapshot((s) => (s ? { ...s, opening: op } : s));
+    };
+
     source.addEventListener("snapshot", onSnapshot);
     source.addEventListener("state", onSnapshot);
     source.addEventListener("finish", onSnapshot);
     source.addEventListener("eval", onEval);
     source.addEventListener("coach", onCoach);
+    source.addEventListener("opening", onOpening);
     source.onopen = () => setConnected(true);
     source.onerror = () => setConnected(false);
     return () => source.close();

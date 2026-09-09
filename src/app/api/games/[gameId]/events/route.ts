@@ -64,6 +64,9 @@ export async function GET(
           send(payload.type, payload.snapshot);
         } else if (payload.type === "eval") {
           send("eval", payload.eval);
+        } else if (payload.type === "opening") {
+          // OS-A2: explicit case — the bare else would ship it as `coach`.
+          send("opening", payload.opening);
         } else {
           send("coach", payload.coach);
         }

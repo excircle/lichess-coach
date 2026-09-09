@@ -15,10 +15,22 @@ export interface ReviewPromptInput {
   judgmentCounts: { blunder: number; mistake: number; inaccuracy: number };
   annotatedMovetext: string;
   plyCount: number;
+  // PLAN OS5: first move that left the explorer book + what theory expected.
+  bookDeparture: { ply: number; san: string; expected: string[] } | null;
+}
+
+// "9…Nh5" style label (standard-start parity; custom-FEN games are an
+// accepted edge — PLAN OS §8 risk 8).
+function departureLabel(d: { ply: number; san: string }): string {
+  return `${Math.ceil(d.ply / 2)}${d.ply % 2 === 1 ? "." : "…"}${d.san}`;
 }
 
 export function buildReviewPrompt(input: ReviewPromptInput): string {
-  return `Review this finished game. The student played ${input.userColor} vs Stockfish level ${input.aiLevel ?? "?"} (${input.speed ?? "casual"}). Result: ${input.result ?? "?"} (${input.status}).${input.opening ? ` Opening: ${input.opening}.` : ""}
+  return `Review this finished game. The student played ${input.userColor} vs Stockfish level ${input.aiLevel ?? "?"} (${input.speed ?? "casual"}). Result: ${input.result ?? "?"} (${input.status}).${input.opening ? ` Opening: ${input.opening}.` : ""}${
+    input.bookDeparture
+      ? ` The game left opening book at ${departureLabel(input.bookDeparture)}${input.bookDeparture.expected.length > 0 ? ` (book: ${input.bookDeparture.expected.join(", ")})` : ""}.`
+      : ""
+  }
 Student accuracy: ${input.accuracy != null ? input.accuracy.toFixed(1) : "?"}. Student mistakes: ${input.judgmentCounts.blunder} blunders, ${input.judgmentCounts.mistake} mistakes, ${input.judgmentCounts.inaccuracy} inaccuracies.
 
 Annotated game (evals are White-POV after each move; "best:" shows what the engine preferred for a student mistake):
@@ -30,7 +42,11 @@ Write the review with EXACTLY these five markdown sections, in this order:
 2-4 sentences: how the game went for the student and the single biggest takeaway.
 
 ## Opening
-Short assessment of the student's opening play${input.opening ? ` (${input.opening})` : ""} and one concrete improvement.
+Short assessment of the student's opening play${input.opening ? ` (${input.opening})` : ""}${
+    input.bookDeparture
+      ? ` — reference where the game left book (${departureLabel(input.bookDeparture)}) and what theory recommended instead`
+      : ""
+  } and one concrete improvement.
 
 ## Key Moments
 3-5 bullets, each starting with the move reference (e.g. "- 14...Qh4?? — ..."): the decisive or instructive moments, what happened, and what the engine showed was better. Only use plies that exist in the game.

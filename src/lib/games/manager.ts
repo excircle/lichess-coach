@@ -15,22 +15,34 @@ import {
 import {
   buildAutoPrompt,
   buildHintPrompt,
+  buildOpeningPrompt,
+  OPENING_SYSTEM_PROMPT,
 } from "@/lib/coach/prompts";
 import { CoachUnavailableError, requestCoachText } from "@/lib/coach/service";
 import { db } from "@/lib/db";
-import { coachComments, games, moves as movesTable } from "@/lib/db/schema";
+import {
+  coachComments,
+  games,
+  moves as movesTable,
+  openingPlies,
+} from "@/lib/db/schema";
 import { getStoredCredentials } from "@/lib/lichess/client";
 import { streamNdjson } from "@/lib/lichess/ndjson";
+import { isBookMove, lookupOpening, studentWdl } from "@/lib/openings/book";
+import { STARTPOS } from "@/lib/openings/explorer";
 import { evalLive } from "@/lib/stockfish/service";
 import type { EngineEval } from "@/lib/stockfish/engine";
 import {
   type BoardGameFull,
   type BoardGameState,
   type BoardLine,
+  type BookMove,
   type CoachCommentView,
   type CoachEvent,
+  type CoachMode,
   type GameEventPayload,
   type GameSnapshot,
+  type OpeningState,
   type SnapshotMove,
   deriveResult,
   isTerminalStatus,
@@ -67,6 +79,11 @@ export class GameManager extends EventEmitter {
   private coachAbort?: AbortController;
   private hintPending = false;
   private row: GameRow;
+  // Opening study state (PLAN OS §5.5): rehydrated from opening_plies.
+  private openingByPly = new Map<number, OpeningState>();
+  private openingChain: Promise<unknown> = Promise.resolve(); // D3 ordering
+  private leftBookPly: number | null = null; // sticky, first non-book ply
+  private leftBookAnnounced = false; // "just left theory" said once (D6)
 
   constructor(row: GameRow) {
     super();
@@ -117,13 +134,42 @@ export class GameManager extends EventEmitter {
         content: c.content,
         createdAt: c.createdAt.getTime(),
       }));
+    // Rehydrate opening annotations (OS-D8). Nothing hits the network here —
+    // same rule as evals; gaps are backfilled from cache at gameFull.
+    const openingRows = db
+      .select()
+      .from(openingPlies)
+      .where(eq(openingPlies.gameId, this.gameId))
+      .orderBy(openingPlies.ply)
+      .all();
+    for (const r of openingRows) {
+      if (r.ply > this.movesList.length) continue; // dangling after a reset
+      if (r.ply > 0 && r.inBook === false) this.leftBookPly ??= r.ply;
+      const bookMoves = parseBookMoves(r.bookMoves);
+      this.openingByPly.set(r.ply, {
+        ply: r.ply,
+        eco: r.eco,
+        name: r.name,
+        source: r.source,
+        bookMoves,
+        suggestedUci: r.suggestedUci,
+        suggestedSan: bookMoves[0]?.san ?? null,
+        inBookNow: bookMoves.length > 0,
+        lastMoveInBook: r.inBook,
+        leftBookPly: this.leftBookPly,
+        fen:
+          r.ply === 0
+            ? newGameFromFen(this.initialFen).fen()
+            : this.movesList[r.ply - 1].fenAfter,
+      });
+    }
   }
 
   get terminal(): boolean {
     return isTerminalStatus(this.status);
   }
 
-  get coachMode(): "auto" | "off" {
+  get coachMode(): CoachMode {
     return this.row.coachMode;
   }
 
@@ -139,11 +185,14 @@ export class GameManager extends EventEmitter {
     this.coachAbort?.abort();
   }
 
-  setCoachMode(mode: "auto" | "off"): void {
+  setCoachMode(mode: CoachMode): void {
     if (mode === this.row.coachMode) return;
     db.update(games).set({ coachMode: mode }).where(eq(games.id, this.gameId)).run();
     this.row = { ...this.row, coachMode: mode };
     if (mode === "off") this.coachAbort?.abort();
+    // §5.5 step 7: switching to opening mid-game backfills missing plies —
+    // cache makes this cheap.
+    if (mode === "opening" && !this.terminal) this.backfillOpeningPlies();
     this.emitEvent({ type: "state", snapshot: this.getSnapshot() });
   }
 
@@ -163,6 +212,7 @@ export class GameManager extends EventEmitter {
       },
       moves: [...this.movesList],
       comments: [...this.comments],
+      opening: this.latestOpening(),
       fen: this.chess.fen(),
       turn: this.chess.turn() === "w" ? "white" : "black",
       wtime: this.wtime,
@@ -247,6 +297,16 @@ export class GameManager extends EventEmitter {
       .run();
     this.row = { ...this.row, aiLevel, speed: full.speed ?? this.row.speed };
     this.handleGameState(full.state);
+    // PLAN OS §5.5 step 2: in opening mode make sure every ply up to the
+    // current position has a lookup queued (normally just ply 0 — anything
+    // more only after a restart with unpersisted plies; cache-cheap).
+    if (this.row.coachMode === "opening" && !this.terminal) {
+      this.backfillOpeningPlies();
+      // D6 row 3: student White at the initial position → coach the start book.
+      if (this.userColor === "white" && this.movesList.length === 0) {
+        void this.triggerOpeningCoachAtStart();
+      }
+    }
   }
 
   private handleGameState(state: BoardGameState): void {
@@ -286,6 +346,11 @@ export class GameManager extends EventEmitter {
       console.warn(`[game ${this.gameId}] server moves < local — full resync`);
       this.resetReplayState();
       db.delete(movesTable).where(eq(movesTable.gameId, this.gameId)).run();
+      // OS-A4: stale book verdicts must not survive keyed to dead plies.
+      db.delete(openingPlies).where(eq(openingPlies.gameId, this.gameId)).run();
+      this.openingByPly.clear();
+      this.leftBookPly = null;
+      this.leftBookAnnounced = false;
     }
     const newTokens = tokens.slice(this.movesList.length);
     const singleNewPly = newTokens.length === 1;
@@ -327,6 +392,10 @@ export class GameManager extends EventEmitter {
       // boot re-attach gets fresh state via gameFull anyway, and stored evals
       // were rehydrated in the constructor).
       if (state) this.queueEval(snapshotMove);
+      // PLAN OS §5.5 step 3: one opening lookup per new ply, on the D3 chain.
+      if (state && this.row.coachMode === "opening") {
+        this.enqueueOpeningLookup(ply);
+      }
     }
   }
 
@@ -417,24 +486,269 @@ export class GameManager extends EventEmitter {
       },
     });
 
-    // Auto-coach: exactly one call per full move cycle — fires when the eval
-    // of the LATEST ply lands, that ply is the AI's reply, and the ply before
-    // it was the user's move.
-    if (
-      !this.terminal &&
-      this.row.coachMode === "auto" &&
-      ply === this.movesList.length &&
-      !move.isUserMove &&
-      ply >= 2 &&
-      this.movesList[ply - 2]?.isUserMove
-    ) {
-      void this.triggerAutoCoach(ply, result);
+    // Coach trigger: exactly one call per full move cycle — fires when the
+    // eval of the LATEST ply lands and that ply is the AI's reply. Effective
+    // behaviour switches on the selected mode (OS-D6/D7).
+    const isLatestAiReply =
+      !this.terminal && ply === this.movesList.length && !move.isUserMove;
+    switch (this.row.coachMode) {
+      case "auto":
+        if (isLatestAiReply && ply >= 2 && this.movesList[ply - 2]?.isUserMove) {
+          void this.triggerAutoCoach(ply, result);
+        }
+        break;
+      case "opening":
+        // No ply >= 2 requirement: student-Black gets a comment on
+        // Stockfish's very first move (D6 row 4).
+        if (isLatestAiReply) void this.triggerOpeningCoach(ply, result);
+        break;
+      case "off":
+        break;
     }
+  }
+
+  // --------------------------------------------------------- opening lookups
+
+  // D3: per-manager promise chain so ply p-1 always resolves before p, even
+  // when a reconnect backfills several plies at once. lookupPly never throws,
+  // but keep the chain unconditionally alive anyway.
+  private enqueueOpeningLookup(ply: number): void {
+    this.openingChain = this.openingChain
+      .then(() => this.lookupPly(ply))
+      .catch((error) =>
+        console.error(`[game ${this.gameId}] opening chain error:`, error),
+      );
+  }
+
+  // §5.5 steps 2/7: queue lookups for every ply not yet annotated (in order —
+  // the chain preserves D3). The cache makes replays of known lines free.
+  private backfillOpeningPlies(): void {
+    for (let ply = 0; ply <= this.movesList.length; ply++) {
+      if (!this.openingByPly.has(ply)) this.enqueueOpeningLookup(ply);
+    }
+  }
+
+  // §5.5 step 4: look up the position AFTER `ply`, mark whether the move at
+  // `ply` was in the previous position's book, persist, emit.
+  private async lookupPly(ply: number): Promise<void> {
+    if (this.stopped || this.openingByPly.has(ply)) return;
+    if (ply > this.movesList.length) return; // resync shrank the game
+    const move = ply > 0 ? this.movesList[ply - 1] : null;
+    const fen = move ? move.fenAfter : newGameFromFen(this.initialFen).fen();
+    const inBook = move ? isBookMove(this.openingByPly.get(ply - 1), move.uci) : null;
+    if (inBook === false) this.leftBookPly ??= ply; // sticky (D6)
+
+    let looked: Awaited<ReturnType<typeof lookupOpening>> | null = null;
+    try {
+      const rootFen = this.initialFen ?? STARTPOS;
+      const play = this.movesList.slice(0, ply).map((m) => m.uci);
+      looked = await lookupOpening(rootFen, play);
+    } catch (error) {
+      // Explorer down/unauthed must never block coaching: fall through to an
+      // empty state so the move cycle degrades to Auto (D6).
+      console.error(`[game ${this.gameId}] opening lookup failed ply ${ply}:`, error);
+    }
+    // A resync may have replaced this ply while the lookup was in flight.
+    if (move && this.movesList[ply - 1]?.uci !== move.uci) return;
+
+    const opening: OpeningState = {
+      ply,
+      eco: looked?.eco ?? null,
+      name: looked?.name ?? null,
+      source: looked?.source ?? null,
+      bookMoves: looked?.bookMoves ?? [],
+      suggestedUci: looked?.bookMoves[0]?.uci ?? null,
+      suggestedSan: looked?.bookMoves[0]?.san ?? null,
+      inBookNow: (looked?.bookMoves.length ?? 0) > 0,
+      lastMoveInBook: inBook,
+      leftBookPly: this.leftBookPly,
+      fen,
+    };
+    this.openingByPly.set(ply, opening);
+
+    const persisted = {
+      eco: opening.eco,
+      name: opening.name,
+      source: opening.source,
+      inBook: opening.lastMoveInBook,
+      bookMoves: JSON.stringify(opening.bookMoves),
+      suggestedUci: opening.suggestedUci,
+    };
+    db.insert(openingPlies)
+      .values({ gameId: this.gameId, ply, ...persisted })
+      .onConflictDoUpdate({
+        target: [openingPlies.gameId, openingPlies.ply],
+        set: persisted,
+      })
+      .run();
+    // D8: keep the games row's opening columns live with the latest NAMED
+    // lookup (the post-game export still overwrites them — unchanged).
+    if (opening.name) {
+      db.update(games)
+        .set({ openingEco: opening.eco, openingName: opening.name })
+        .where(eq(games.id, this.gameId))
+        .run();
+    }
+    this.emitEvent({ type: "opening", opening });
+  }
+
+  private latestOpening(): OpeningState | null {
+    let latest: OpeningState | null = null;
+    for (const s of this.openingByPly.values()) {
+      if (!latest || s.ply > latest.ply) latest = s;
+    }
+    return latest;
   }
 
   // ------------------------------------------------------------ coach wiring
 
-  private async triggerAutoCoach(aiPly: number, currentEval: EngineEval): Promise<void> {
+  // §5.5 step 6: opening-mode move cycle. Position in book → opening prompt
+  // (replaces auto this cycle, D7); out of book → the existing auto path with
+  // a one-time "just left theory" note (D6).
+  private async triggerOpeningCoach(aiPly: number, currentEval: EngineEval): Promise<void> {
+    await this.openingChain; // D3: aiPly's lookup resolved (or failed → empty state)
+    if (this.terminal || aiPly !== this.movesList.length) return; // superseded
+    const state = this.openingByPly.get(aiPly);
+
+    if (state?.inBookNow) {
+      if (this.comments.some((c) => c.ply === aiPly && c.trigger === "opening")) return; // dedupe
+      this.coachAbort?.abort(); // supersede any in-flight comment
+      const abortController = new AbortController();
+      this.coachAbort = abortController;
+
+      const aiMove = this.movesList[aiPly - 1];
+      const userMove = aiPly >= 2 ? this.movesList[aiPly - 2] : undefined; // none at ply 1
+      const userState = userMove ? this.openingByPly.get(aiPly - 1) : undefined;
+      const beforeUserState = userMove ? this.openingByPly.get(aiPly - 2) : undefined;
+      // OS-A7: engine lines normalize to White POV exactly like the auto path.
+      const engineLines = currentEval.lines.map((line) => {
+        const white = toWhitePov(aiMove.fenAfter, { cp: line.cp, mate: line.mate });
+        return {
+          san: uciLineToSan(aiMove.fenAfter, line.pvUci, 6),
+          eval: formatEval(white.cp, white.mate),
+        };
+      });
+      const bookMoves = this.promptBookMoves(state);
+      const prompt = buildOpeningPrompt({
+        userColor: this.userColor,
+        aiLevel: this.row.aiLevel,
+        phase: phaseOfFen(aiMove.fenAfter, aiPly),
+        movetextSan: this.movetext(),
+        fen: aiMove.fenAfter,
+        eco: state.eco,
+        name: state.name,
+        source: state.source ?? "masters",
+        studentLastMove: userMove
+          ? {
+              label: plyLabel(userMove),
+              inBook: userState?.lastMoveInBook ?? false,
+              bookAlternatives: (beforeUserState?.bookMoves ?? []).map((m) => m.san),
+            }
+          : null,
+        aiLastMove: { label: plyLabel(aiMove), inBook: state.lastMoveInBook ?? false },
+        leftBookNow:
+          userState?.lastMoveInBook === false && this.leftBookPly === aiPly - 1,
+        bookMoves,
+        engineLines,
+        lastComments: this.comments.slice(-2).map((c) => c.content),
+      });
+      await this.runCoach({
+        ply: aiPly,
+        trigger: "opening",
+        prompt,
+        systemPrompt: OPENING_SYSTEM_PROMPT,
+        abortController,
+        evalSnapshot: {
+          opening: [state.eco, state.name].filter(Boolean).join(" ") || null,
+          source: state.source,
+          bookMoves: bookMoves.map((m) => m.san),
+          engineLines,
+        },
+      });
+      return;
+    }
+
+    // Out of book — degrade to Auto, but only where the auto path is valid
+    // (triggerAutoCoach derefs movesList[aiPly-2] unguarded — §12 confirmed).
+    if (aiPly >= 2 && this.movesList[aiPly - 2]?.isUserMove) {
+      let leftBookNote: string | undefined;
+      if (!this.leftBookAnnounced && this.leftBookPly != null) {
+        this.leftBookAnnounced = true; // one-time (D6)
+        const departure = this.movesList[this.leftBookPly - 1];
+        const lastBook = this.openingByPly.get(this.leftBookPly - 1);
+        const lastBookName = lastBook?.name
+          ? `${lastBook.eco ? `${lastBook.eco} ` : ""}${lastBook.name}`
+          : null;
+        leftBookNote = `The game has just left opening theory after ${plyLabel(departure)}${
+          lastBookName ? `; the last book position was ${lastBookName}` : ""
+        }. Mention this in one clause.`;
+      }
+      void this.triggerAutoCoach(aiPly, currentEval, leftBookNote);
+    }
+  }
+
+  // D6 row 3: student is White at ply 0 — coach the start-position book
+  // before any move exists. No engine context yet.
+  private async triggerOpeningCoachAtStart(): Promise<void> {
+    await this.openingChain;
+    if (this.terminal || this.movesList.length !== 0) return;
+    const state = this.openingByPly.get(0);
+    if (!state?.inBookNow) return;
+    if (this.comments.some((c) => c.ply === 0 && c.trigger === "opening")) return; // dedupe
+    this.coachAbort?.abort();
+    const abortController = new AbortController();
+    this.coachAbort = abortController;
+    const bookMoves = this.promptBookMoves(state);
+    const prompt = buildOpeningPrompt({
+      userColor: this.userColor,
+      aiLevel: this.row.aiLevel,
+      phase: "opening",
+      movetextSan: "",
+      fen: state.fen,
+      eco: state.eco,
+      name: state.name,
+      source: state.source ?? "masters",
+      studentLastMove: null,
+      aiLastMove: null,
+      leftBookNow: false,
+      bookMoves,
+      engineLines: [],
+      lastComments: [],
+    });
+    await this.runCoach({
+      ply: 0,
+      trigger: "opening",
+      prompt,
+      systemPrompt: OPENING_SYSTEM_PROMPT,
+      abortController,
+      evalSnapshot: {
+        opening: [state.eco, state.name].filter(Boolean).join(" ") || null,
+        source: state.source,
+        bookMoves: bookMoves.map((m) => m.san),
+        engineLines: [],
+      },
+    });
+  }
+
+  // Book list shaped for the opening prompt (D5: student-POV W/D/L; name the
+  // line a move leads to only when it differs from the current one).
+  private promptBookMoves(state: OpeningState) {
+    return state.bookMoves.map((m) => ({
+      san: m.san,
+      games: m.games,
+      wdl: studentWdl(m, this.userColor),
+      leadsTo:
+        m.leadsTo && m.leadsTo.name !== state.name
+          ? `${m.leadsTo.eco} ${m.leadsTo.name}`
+          : null,
+    }));
+  }
+
+  private async triggerAutoCoach(
+    aiPly: number,
+    currentEval: EngineEval,
+    leftBookNote?: string,
+  ): Promise<void> {
     if (this.comments.some((c) => c.ply === aiPly && c.trigger === "auto")) return; // dedupe
     this.coachAbort?.abort(); // supersede any in-flight comment
     const abortController = new AbortController();
@@ -474,6 +788,7 @@ export class GameManager extends EventEmitter {
       missedBestSan,
       topLines,
       lastComments: this.comments.slice(-2).map((c) => c.content),
+      leftBookNote,
     });
 
     await this.runCoach({
@@ -541,14 +856,16 @@ export class GameManager extends EventEmitter {
 
   private async runCoach(args: {
     ply: number;
-    trigger: "auto" | "user_request";
+    trigger: "auto" | "user_request" | "opening";
     prompt: string;
+    systemPrompt?: string; // OS-A3: opening cycles pass OPENING_SYSTEM_PROMPT
     abortController: AbortController;
     evalSnapshot: unknown;
   }): Promise<CoachEvent> {
     try {
       const reply = await requestCoachText(args.prompt, {
         abortController: args.abortController,
+        systemPrompt: args.systemPrompt,
       });
       if (args.abortController.signal.aborted) {
         return { ply: args.ply, trigger: args.trigger, content: null, error: "superseded", createdAt: Date.now() };
@@ -714,6 +1031,36 @@ export function buildDbSnapshot(gameId: string): GameSnapshot | null {
     .all();
   const lastFen =
     movesList[movesList.length - 1]?.fenAfter ?? newGameFromFen(row.initialFen).fen();
+  // OS-A6: every state frame wholesale-replaces the client snapshot, so this
+  // hand-maintained builder must carry `opening` too (highest annotated ply).
+  const openingRows = db
+    .select()
+    .from(openingPlies)
+    .where(eq(openingPlies.gameId, gameId))
+    .orderBy(openingPlies.ply)
+    .all();
+  let opening: OpeningState | null = null;
+  const last = openingRows[openingRows.length - 1];
+  if (last) {
+    const bookMoves = parseBookMoves(last.bookMoves);
+    opening = {
+      ply: last.ply,
+      eco: last.eco,
+      name: last.name,
+      source: last.source,
+      bookMoves,
+      suggestedUci: last.suggestedUci,
+      suggestedSan: bookMoves[0]?.san ?? null,
+      inBookNow: bookMoves.length > 0,
+      lastMoveInBook: last.inBook,
+      leftBookPly:
+        openingRows.find((r) => r.ply > 0 && r.inBook === false)?.ply ?? null,
+      fen:
+        last.ply === 0
+          ? newGameFromFen(row.initialFen).fen()
+          : (movesList[last.ply - 1]?.fenAfter ?? lastFen),
+    };
+  }
   return {
     game: {
       id: row.id,
@@ -734,6 +1081,7 @@ export function buildDbSnapshot(gameId: string): GameSnapshot | null {
       content: c.content,
       createdAt: c.createdAt.getTime(),
     })),
+    opening,
     fen: lastFen,
     turn:
       (movesList.length % 2 === 0) === (startTurn === "white") ? "white" : "black",
@@ -746,4 +1094,12 @@ export function buildDbSnapshot(gameId: string): GameSnapshot | null {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseBookMoves(json: string): BookMove[] {
+  try {
+    return JSON.parse(json) as BookMove[];
+  } catch {
+    return [];
+  }
 }

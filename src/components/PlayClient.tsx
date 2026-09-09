@@ -10,6 +10,7 @@ import CoachPanel from "./CoachPanel";
 import EvalBar from "./EvalBar";
 import GameControls from "./GameControls";
 import MoveList from "./MoveList";
+import OpeningCard from "./OpeningCard";
 
 export default function PlayClient({ gameId }: { gameId: string }) {
   const { snapshot, connected, coachError } = useGameEvents(gameId);
@@ -62,7 +63,7 @@ export default function PlayClient({ gameId }: { gameId: string }) {
   return (
     <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
       <div className="flex w-full max-w-[600px] shrink-0 items-stretch gap-2">
-        {game.coachMode === "auto" && <EvalBar snapshot={snapshot} />}
+        {game.coachMode !== "off" && <EvalBar snapshot={snapshot} />}
         <div className="w-full max-w-[560px]">
           <Board
             fen={optimisticFen ?? snapshot.fen}
@@ -96,6 +97,8 @@ export default function PlayClient({ gameId }: { gameId: string }) {
           />
         )}
         <GameControls gameId={gameId} snapshot={snapshot} />
+
+        {game.coachMode === "opening" && <OpeningCard snapshot={snapshot} />}
 
         <CoachPanel gameId={gameId} snapshot={snapshot} coachError={coachError} />
 

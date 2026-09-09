@@ -88,6 +88,15 @@ export default function ReviewView({
             Accuracy {review.data.accuracy.toFixed(1)}
           </span>
         )}
+        {snapshot.opening && (snapshot.opening.eco ?? snapshot.opening.name) && (
+          <span className="rounded-full border border-neutral-300 px-3 py-1 dark:border-neutral-700">
+            Opening: {snapshot.opening.eco ?? snapshot.opening.name}
+            {snapshot.opening.leftBookPly != null &&
+            snapshot.moves[snapshot.opening.leftBookPly - 1]
+              ? ` · left book at ${moveRef(snapshot.moves[snapshot.opening.leftBookPly - 1])}`
+              : ""}
+          </span>
+        )}
       </div>
 
       {RUNNING.has(status) && (

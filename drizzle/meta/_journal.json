@@ -8,6 +8,13 @@
       "when": 1788637974940,
       "tag": "0000_bored_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788926380645,
+      "tag": "0001_jittery_diamondback",
+      "breakpoints": true
     }
   ]
 }

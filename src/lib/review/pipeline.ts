@@ -13,9 +13,15 @@ import {
 } from "@/lib/chess";
 import { CoachUnavailableError, requestCoachText } from "@/lib/coach/service";
 import { db } from "@/lib/db";
-import { games, moves as movesTable, reviews } from "@/lib/db/schema";
-import { isTerminalStatus, type Judgment } from "@/lib/games/types";
+import { games, moves as movesTable, openingPlies, reviews } from "@/lib/db/schema";
+import {
+  isTerminalStatus,
+  type BookMove,
+  type Judgment,
+} from "@/lib/games/types";
 import { exportGame } from "@/lib/lichess/client";
+import { isBookMove, lookupOpening } from "@/lib/openings/book";
+import { STARTPOS } from "@/lib/openings/explorer";
 import { evalBatch } from "@/lib/stockfish/service";
 import { buildReviewPrompt, REVIEW_SYSTEM_PROMPT } from "./prompts";
 
@@ -143,6 +149,11 @@ async function runReviewJob(gameId: string): Promise<void> {
     return;
   }
 
+  // 1b. Opening departure (PLAN OS5): annotate from opening_plies, filling
+  // gaps with cached lookups so every review gets it, not just opening-mode
+  // games. Never fatal — the explorer being down degrades to no departure.
+  const bookDeparture = await computeOpeningDeparture(gameId, game, moveRows);
+
   // 2. Deep batch evals, sequential so each move's drop uses its predecessor.
   const startTurn: "white" | "black" =
     game.initialFen && game.initialFen.split(" ")[1] === "b" ? "black" : "white";
@@ -225,8 +236,13 @@ async function runReviewJob(gameId: string): Promise<void> {
   console.log(`[review ${gameId}] generating (accuracy=${accuracy?.toFixed(1)})`);
 
   const model = process.env.REVIEW_MODEL ?? "sonnet";
+  // Re-fetch: the export (step 1) and live D8 updates both write these columns
+  // after `game` was selected; opening_plies is the last-resort name source.
+  const freshGame = db.select().from(games).where(eq(games.id, gameId)).get() ?? game;
   const opening =
-    [game.openingEco, game.openingName].filter(Boolean).join(" ") || null;
+    [freshGame.openingEco, freshGame.openingName].filter(Boolean).join(" ") ||
+    latestNamedOpening(gameId) ||
+    null;
   const prompt = buildReviewPrompt({
     userColor: game.userColor,
     aiLevel: game.aiLevel,
@@ -238,6 +254,7 @@ async function runReviewJob(gameId: string): Promise<void> {
     judgmentCounts,
     annotatedMovetext: annotated.join(" "),
     plyCount: moveRows.length,
+    bookDeparture,
   });
 
   let reply;
@@ -278,6 +295,102 @@ async function runReviewJob(gameId: string): Promise<void> {
     completedAt: new Date(),
   });
   console.log(`[review ${gameId}] complete (${reply.latencyMs}ms claude)`);
+}
+
+type OpeningPlyRow = typeof openingPlies.$inferSelect;
+
+// PLAN OS5: the first move that left the explorer book, plus what the book
+// expected there. Games not played in opening mode get plies 0..min(30, n)
+// annotated here (cached — repeat openings are free); rows persist so the
+// review chip (buildDbSnapshot.opening) works for every reviewed game.
+async function computeOpeningDeparture(
+  gameId: string,
+  game: typeof games.$inferSelect,
+  moveRows: (typeof movesTable.$inferSelect)[],
+): Promise<{ ply: number; san: string; expected: string[] } | null> {
+  const cap = Math.min(30, moveRows.length);
+  const byPly = new Map<number, OpeningPlyRow>(
+    db
+      .select()
+      .from(openingPlies)
+      .where(eq(openingPlies.gameId, gameId))
+      .all()
+      .map((r) => [r.ply, r]),
+  );
+  for (let ply = 0; ply <= cap; ply++) {
+    if (byPly.has(ply)) continue;
+    try {
+      const rootFen = game.initialFen ?? STARTPOS;
+      const play = moveRows.slice(0, ply).map((r) => r.uci);
+      const looked = await lookupOpening(rootFen, play);
+      const prev = byPly.get(ply - 1);
+      const inBook =
+        ply === 0
+          ? null
+          : isBookMove(
+              prev ? { bookMoves: parseBookMovesJson(prev.bookMoves) } : undefined,
+              moveRows[ply - 1].uci,
+            );
+      const values = {
+        gameId,
+        ply,
+        eco: looked.eco,
+        name: looked.name,
+        source: looked.source,
+        inBook,
+        bookMoves: JSON.stringify(looked.bookMoves),
+        suggestedUci: looked.bookMoves[0]?.uci ?? null,
+      };
+      db.insert(openingPlies)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [openingPlies.gameId, openingPlies.ply],
+          set: values,
+        })
+        .run();
+      byPly.set(ply, db
+        .select()
+        .from(openingPlies)
+        .where(and(eq(openingPlies.gameId, gameId), eq(openingPlies.ply, ply)))
+        .get()!);
+    } catch (error) {
+      console.warn(`[review ${gameId}] opening backfill stopped at ply ${ply}:`, error);
+      break; // explorer down — review proceeds without the departure
+    }
+  }
+  const rows = [...byPly.values()].sort((a, b) => a.ply - b.ply);
+  const departure = rows.find((r) => r.ply > 0 && r.inBook === false);
+  const move = departure ? moveRows[departure.ply - 1] : undefined;
+  if (!departure || !move) return null;
+  const prev = byPly.get(departure.ply - 1);
+  return {
+    ply: departure.ply,
+    san: move.san,
+    expected: prev ? parseBookMovesJson(prev.bookMoves).map((m) => m.san) : [],
+  };
+}
+
+// Latest lookup that carried a name — prompt fallback when the games row has
+// no opening (export failed and the game never ran in opening mode).
+function latestNamedOpening(gameId: string): string | null {
+  const rows = db
+    .select()
+    .from(openingPlies)
+    .where(eq(openingPlies.gameId, gameId))
+    .orderBy(openingPlies.ply)
+    .all();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].name) return [rows[i].eco, rows[i].name].filter(Boolean).join(" ");
+  }
+  return null;
+}
+
+function parseBookMovesJson(json: string): BookMove[] {
+  try {
+    return JSON.parse(json) as BookMove[];
+  } catch {
+    return [];
+  }
 }
 
 function whitePovOf(

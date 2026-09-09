@@ -35,10 +35,10 @@ export default function CoachPanel({ gameId, snapshot, coachError }: CoachPanelP
 
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Coach</h3>
-        <CoachToggle gameId={gameId} mode={game.coachMode} disabled={finished} />
-      </div>
+      {/* OS-A6: the three-segment control gets its own row — the header row
+          can't fit it next to the title at the column's 280px minimum. */}
+      <h3 className="font-semibold">Coach</h3>
+      <CoachToggle gameId={gameId} mode={game.coachMode} disabled={finished} />
 
       <div
         ref={scroller}
@@ -48,13 +48,19 @@ export default function CoachPanel({ gameId, snapshot, coachError }: CoachPanelP
           <p className="text-neutral-400">
             {game.coachMode === "auto"
               ? "The coach will comment after each of your move cycles."
-              : "Coaching is off — use “Ask coach” for a hint."}
+              : game.coachMode === "opening"
+                ? "Opening study: the coach explains each book move as the opening unfolds."
+                : "Coaching is off — use “Ask coach” for a hint."}
           </p>
         ) : (
           comments.map((c) => (
             <div key={`${c.ply}-${c.createdAt}`}>
               <p className="text-xs text-neutral-400">
-                {c.trigger === "user_request" ? "hint" : "after"}{" "}
+                {c.trigger === "opening"
+                  ? "opening"
+                  : c.trigger === "user_request"
+                    ? "hint"
+                    : "after"}{" "}
                 {c.ply > 0 ? plyLabel(moves[c.ply - 1]) : "game start"}
               </p>
               <p className="leading-snug">{c.content}</p>

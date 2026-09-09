@@ -9,6 +9,7 @@ const envSchema = z.object({
   APP_URL: z.string().default("http://localhost:3000"),
   DATABASE_PATH: z.string().default("/data/coach.db"),
   STOCKFISH_PATH: z.string().default("/usr/games/stockfish"),
+  EXPLORER_URL: z.string().default("https://explorer.lichess.org"),
   COACH_MODEL: z.string().default("sonnet"),
   REVIEW_MODEL: z.string().default("sonnet"),
 });

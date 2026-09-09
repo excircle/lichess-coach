@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useCreateGame } from "@/hooks/useCreateGame";
+import type { CoachMode } from "@/lib/games/types";
 
 const TIME_CONTROLS: {
   label: string;
@@ -23,7 +24,7 @@ export default function NewGameForm() {
   const [level, setLevel] = useState(3);
   const [timeIdx, setTimeIdx] = useState(0); // unlimited
   const [color, setColor] = useState<"white" | "black" | "random">("white");
-  const [coachMode, setCoachMode] = useState<"auto" | "off">("auto");
+  const [coachMode, setCoachMode] = useState<CoachMode>("auto");
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,7 +102,8 @@ export default function NewGameForm() {
             value={coachMode}
             onChange={(e) => setCoachMode(e.target.value as typeof coachMode)}
           >
-            <option value="auto">Auto (from M3)</option>
+            <option value="auto">Auto</option>
+            <option value="opening">Opening study</option>
             <option value="off">Off</option>
           </select>
         </label>

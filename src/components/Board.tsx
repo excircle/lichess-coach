@@ -84,6 +84,8 @@ export default function Board({ fen, orientation, canMove, onMove }: BoardProps)
   return (
     <Chessboard
       options={{
+        // OS-A6: two boards share the page in opening mode — both need ids.
+        id: "main-board",
         position: fen,
         boardOrientation: orientation,
         allowDragging: canMove,

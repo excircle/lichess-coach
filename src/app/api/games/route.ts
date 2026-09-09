@@ -16,7 +16,7 @@ const createSchema = z.object({
   clockLimit: z.number().int().min(180).max(10800).nullable(),
   clockIncrement: z.number().int().min(0).max(60).nullable(),
   color: z.enum(["white", "black", "random"]).default("white"),
-  coachMode: z.enum(["auto", "off"]).default("auto"),
+  coachMode: z.enum(["auto", "opening", "off"]).default("auto"),
 });
 
 export async function POST(request: Request) {

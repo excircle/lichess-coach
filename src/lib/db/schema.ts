@@ -33,7 +33,7 @@ export const games = sqliteTable("games", {
   openingName: text("opening_name"),
   movesUci: text("moves_uci").notNull().default(""),
   pgn: text("pgn"),
-  coachMode: text("coach_mode", { enum: ["auto", "off"] })
+  coachMode: text("coach_mode", { enum: ["auto", "opening", "off"] })
     .notNull()
     .default("auto"),
   claudeSessionId: text("claude_session_id"), // future: in-app chat milestone
@@ -80,7 +80,7 @@ export const coachComments = sqliteTable("coach_comments", {
     .notNull()
     .references(() => games.id),
   ply: integer("ply").notNull(),
-  trigger: text("trigger", { enum: ["auto", "user_request"] }).notNull(),
+  trigger: text("trigger", { enum: ["auto", "user_request", "opening"] }).notNull(),
   content: text("content").notNull(),
   evalSnapshot: text("eval_snapshot"), // JSON of the eval context given to Claude
   model: text("model"),
@@ -89,6 +89,36 @@ export const coachComments = sqliteTable("coach_comments", {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+// PLAN OS-D4: explorer responses are static — cache them 30 days, keyed by
+// source + root position + play sequence.
+export const openingCache = sqliteTable("opening_cache", {
+  key: text("key").primaryKey(), // `${source}|${rootFen}|${play}`
+  json: text("json").notNull(), // raw explorer response, topGames stripped
+  fetchedAt: integer("fetched_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// PLAN OS-D8: per-ply opening annotations — snapshot rehydration + review.
+export const openingPlies = sqliteTable(
+  "opening_plies",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    gameId: text("game_id")
+      .notNull()
+      .references(() => games.id),
+    ply: integer("ply").notNull(), // 0 = start position
+    eco: text("eco"),
+    name: text("name"),
+    source: text("source", { enum: ["masters", "lichess"] }),
+    inBook: integer("in_book", { mode: "boolean" }), // null at ply 0
+    bookMoves: text("book_moves").notNull(), // JSON BookMove[] for the position AFTER this ply
+    suggestedUci: text("suggested_uci"), // top book move, null when out of book
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [uniqueIndex("opening_plies_game_ply_unique").on(t.gameId, t.ply)],
+);
 
 export const reviews = sqliteTable("reviews", {
   id: integer("id").primaryKey({ autoIncrement: true }),
