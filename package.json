@@ -12,6 +12,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio --host 0.0.0.0 --port 4983",
     "spike:coach": "tsx scripts/spike-coach.ts",
+    "spike:explorer": "tsx scripts/spike-explorer.ts",
     "spike:stockfish": "tsx scripts/spike-stockfish.ts",
     "spike:stream": "tsx scripts/spike-stream.ts"
   },

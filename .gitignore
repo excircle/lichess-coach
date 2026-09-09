@@ -23,7 +23,8 @@
 CLAUDE.MD
 OUTCOME.MD
 PLAN.md
-api
+# vendored lichess-org/api reference clone (root only — NOT src/app/api!)
+/api
 
 # debug
 npm-debug.log*
